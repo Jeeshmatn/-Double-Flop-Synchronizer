@@ -1,0 +1,146 @@
+// Design: Double-Flop Synchronizer with Active Low Reset
+module double_flop_sync (
+    input clk_b,         // Destination clock
+    input rst_b,         // Reset in destination domain (active high)
+    input signal_a,      // Signal from domain A
+    output signal_b      // Synchronized signal for domain B
+);
+    // Two-stage synchronizer
+    reg sync_ff1, sync_ff2;
+    
+    always @(posedge clk_b or posedge rst_b) begin
+        if (rst_b) begin
+            sync_ff1 <= 1'b0;
+            sync_ff2 <= 1'b0;
+        end else begin
+            sync_ff1 <= signal_a;    // First flop catches metastability
+            sync_ff2 <= sync_ff1;    // Second flop resolves metastability
+        end
+    end
+    
+    assign signal_b = sync_ff2;
+endmodule
+
+// Testbench for Double-Flop Synchronizer with Random Signal Values
+module double_flop_sync_tb;
+    // Clock domain A (source domain) - 120MHz
+    reg clk_a;
+    
+    // Clock domain B (destination domain) - 80MHz
+    reg clk_b;
+    
+    // Shared reset signal
+    reg rst;
+    
+    // Signals for the DUT
+    reg signal_a_reg;        // Signal generated in domain A
+    wire signal_a;           // Signal connected to the DUT
+    wire signal_b;           // Synchronizer output in domain B
+    
+    // For random number generation
+    integer seed;
+    
+    // Instantiate the synchronizer
+    double_flop_sync dut (
+        .clk_b(clk_b),
+        .rst_b(rst),
+        .signal_a(signal_a),
+        .signal_b(signal_b)
+    );
+    
+    // Connect domain A register to the synchronizer input
+    assign signal_a = signal_a_reg;
+    
+    // Clock generation for domain A (120MHz - 8.33ns period)
+    initial begin
+        clk_a = 0;
+        forever #4.17 clk_a = ~clk_a;  // 8.33ns period
+    end
+    
+    // Clock generation for domain B (80MHz - 12.5ns period)
+    initial begin
+        clk_b = 0;
+        forever #6.25 clk_b = ~clk_b;  // 12.5ns period
+    end
+    
+    // Random signal generation in domain A
+    initial begin
+        seed = 42;  // Fixed seed for reproducibility
+        signal_a_reg = 0;
+    end
+    
+    // Generate random signal values in domain A
+    always @(posedge clk_a or posedge rst) begin
+        if (rst) begin
+            signal_a_reg <= 1'b0;
+        end else begin
+            // Generate a random bit with ~30% probability of changing
+            if ($random(seed) % 10 < 3) begin
+                signal_a_reg <= ~signal_a_reg;
+            end
+        end
+    end
+    
+    // Store transitions for verification
+    reg [63:0] transition_times [9:0];
+    reg [9:0] signal_values;
+    integer transition_count = 0;
+    
+    // Monitor transitions in domain A for verification
+    always @(signal_a_reg) begin
+        if (!rst && transition_count < 10) begin
+            transition_times[transition_count] = $time;
+            signal_values[transition_count] = signal_a_reg;
+            transition_count = transition_count + 1;
+        end
+    end
+    
+    // Monitor and display signals
+    initial begin
+        $dumpfile("double_flop_sync_tb.vcd");
+        $dumpvars(0, double_flop_sync_tb);
+        
+        // Display header
+        $display("Time\tRST\tCLK_A\tCLK_B\tSignal_A\tSync_FF1\tSync_FF2\tSignal_B");
+        $monitor("%0t\t%b\t%b\t%b\t%b\t%b\t%b\t%b", 
+                 $time, rst, clk_a, clk_b, signal_a, dut.sync_ff1, dut.sync_ff2, signal_b);
+        
+        // Test sequence
+        rst = 1;            // Assert reset
+        #30;                // Wait 30ns
+        rst = 0;            // De-assert reset
+        
+        // Run simulation for 800ns to observe multiple random transitions
+        #800;
+        
+        // Print transition summary
+        $display("\nRandom Signal Transitions in Domain A:");
+        for (integer i = 0; i < transition_count; i = i + 1) begin
+            $display("Transition %0d at time %0t: signal_a = %b", i, transition_times[i], signal_values[i]);
+        end
+        
+        // Print completion message
+        $display("\nSimulation completed successfully!");
+        $finish;
+    end
+    
+    // Analysis of synchronization latency
+    reg sync_done;
+    time sync_start_time;
+    time sync_end_time;
+    
+    always @(posedge clk_a) begin
+        if (!rst && signal_a_reg !== dut.sync_ff2 && !sync_done) begin
+            sync_start_time = $time;
+            sync_done = 1;
+        end
+    end
+    
+    always @(posedge clk_b) begin
+        if (sync_done && signal_a_reg === dut.sync_ff2) begin
+            sync_end_time = $time;
+            $display("Synchronization latency: %0t", sync_end_time - sync_start_time);
+            sync_done = 0;
+        end
+    end
+endmodule
